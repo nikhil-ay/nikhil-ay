@@ -1,0 +1,93 @@
+import os
+import glob
+import pandas as pd
+import pyodbc
+
+def get_run_month():
+    while True:
+        run_month = input("Enter the run month (e.g., 'November 2024'): ").strip()
+        try:
+            pd.to_datetime(run_month, format='%B %Y')
+            return run_month
+        except ValueError:
+            print("Invalid format. Please enter as 'Month Name Year' (e.g., 'November 2024').")
+
+def get_excel_files(folder_path):
+    return glob.glob(os.path.join(folder_path, "*.xlsx"))
+
+def read_and_compile_excels(file_list):
+    df_list = []
+    for file in file_list:
+        print(f"Reading {file}...")
+        df = pd.read_excel(file)
+        df_list.append(df)
+    if df_list:
+        combined_df = pd.concat(df_list, ignore_index=True)
+        print(f"Files combined: {len(df_list)} files, {combined_df.shape[0]} rows total.")
+        return combined_df
+    else:
+        print("No Excel files found.")
+        return None
+
+def table_exists(cursor, table_name):
+    cursor.execute("""
+        SELECT 1 FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_NAME = ? AND TABLE_TYPE = 'BASE TABLE'
+    """, table_name)
+    return cursor.fetchone() is not None
+
+def create_table(cursor, table_name, df):
+    # Create table SQL from DataFrame columns; all as NVARCHAR(MAX) for simplicity
+    col_defs = ", ".join([f"[{col}] NVARCHAR(MAX)" for col in df.columns])
+    create_stmt = f"CREATE TABLE [{table_name}] ({col_defs})"
+    print(f"Creating table {table_name} ...")
+    cursor.execute(create_stmt)
+
+def load_to_sql(df, table_name, server, database, username, password):
+    conn_str = (
+        "DRIVER={ODBC Driver 17 for SQL Server};"
+        f"SERVER={server};DATABASE={database};UID={username};PWD={password}"
+    )
+    with pyodbc.connect(conn_str) as conn:
+        cursor = conn.cursor()
+        if not table_exists(cursor, table_name):
+            create_table(cursor, table_name, df)
+            conn.commit()
+        # Prepare bulk insert
+        placeholders = ', '.join(['?'] * len(df.columns))
+        columns = ', '.join([f"[{col}]" for col in df.columns])
+        insert_sql = f"INSERT INTO [{table_name}] ({columns}) VALUES ({placeholders})"
+        print(f"Inserting {len(df)} records into {table_name} ...")
+        data = [tuple(map(str, row)) for row in df.values]
+        cursor.executemany(insert_sql, data)
+        conn.commit()
+    print(f"Data loaded to SQL table: {table_name}")
+
+def main():
+    run_month = get_run_month()
+    folder_path = os.path.join("C:\\Vibe Coding\\Load Files", run_month)
+    if not os.path.exists(folder_path):
+        print(f"Folder not found: {folder_path}")
+        return
+
+    excel_files = get_excel_files(folder_path)
+    if not excel_files:
+        print("No Excel files found in the folder.")
+        return
+
+    combined_df = read_and_compile_excels(excel_files)
+    if combined_df is None:
+        return
+
+    # SQL Server connection details (UPDATE these for your environment)
+    server = 'YOUR_SERVER'
+    database = 'YOUR_DATABASE'
+    username = 'YOUR_USERNAME'
+    password = 'YOUR_PASSWORD'
+    table_name = 'YOUR_TABLE_NAME'
+
+    print("Loading data to SQL Server...")
+    load_to_sql(combined_df, table_name, server, database, username, password)
+
+if __name__ == "__main__":
+    main()
